@@ -1,0 +1,358 @@
+---
+title: "ACS"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggrepel)
+library(ggtext)
+library(here)
+library(showtext)
+library(tidycensus)
+library(readxl)
+
+census_api_key(Sys.getenv("census_api_key"))
+
+showtext_auto()
+
+source(here::here("functions.R"))
+
+theme_set(theme_minimal())
+```
+
+## Variables
+
+```{r}
+baselines <- c(
+  population_count = "B01003_001",
+  household_count  = "B25001_001"
+)
+
+housing_variables <- c(
+  total_housing_units = "B25002_001",
+  occupied_units      = "B25002_002",
+  vacant_units        = "B25002_003",
+  other_vacant_units  = "B25004_008"
+  # B25002_002E/NULLIF(B25002_003E,0) as census_housing_Occupied_Vacant_Ratio,
+  # census_housing_Total_Owned_Units = "B25106_002E",
+  # census_housing_Total_Rented_Units = "B25106_024E",
+  # B25106_002E/NULLIF(B25106_024E,0) as census_housing_Owned_Rented_Ratio, 
+  # B25106_006E + B25106_010E + B25106_014E + B25106_018E + B25106_022E as census_housing_High_Living_Expenses_Units_Owned,
+  # B25106_028E + B25106_032E + B25106_036E + B25106_040E + B25106_044E as census_housing_High_Living_Expenses_Units_Rented
+)
+
+
+health_variables <- c(
+    health_total   = "B27001_001",
+    medicare_total = "C27006_001"
+    # B27001_004E + B27001_032E as census_health_Health_Coverage_Under_6,
+    # B27001_007E + B27001_035E as census_health_Health_Coverage_6_18,
+    # B27001_010E + B27001_038E as census_health_Health_Coverage_19_25,
+    # B27001_013E + B27001_041E as census_health_Health_Coverage_26_34,
+    # B27001_016E + B27001_044E as census_health_Health_Coverage_35_44,
+    # B27001_019E + B27001_047E as census_health_Health_Coverage_45_54,
+    # B27001_022E + B27001_050E as census_health_Health_Coverage_55_64,
+    # B27001_025E + B27001_053E as census_health_Health_Coverage_65_74,
+    # B27001_028E + B27001_056E as census_health_Health_Coverage_75_Over,
+    # C27006_004E + C27006_014E as census_health_Medicare_Coverage_Under_19,
+    # C27006_007E + C27006_017E as census_health_Medicare_Coverage_19_64,
+    # C27006_010E + C27006_020E as census_health_Medicare_Coverage_65_Over
+  )
+
+economy_variables <- c(
+  employed_population                             = "B23025_004",
+  # income_social_security                          = "B19055_002",
+  income_poverty_ratio_50_Below                   = "C17002_002",
+  income_poverty_ratio_50_99                      = "C17002_003",
+  income_poverty_ratio_100_124                    = "C17002_004",
+  income_poverty_ratio_125_149                    = "C17002_005",
+  income_poverty_ratio_150_184                    = "C17002_006",
+  income_poverty_ratio_185_199                    = "C17002_007",
+  income_poverty_ratio_200_Up                     = "C17002_008",
+  total_households_received_food_stamps           = "B22007_002",
+  # NULLIF(B19126_001E, -666666666) as census_economy_Median_Income,
+  household_received_foodstamps_in_last_12_months = "B22002_002",
+  number_unemployed                               = "B23025_005"
+)
+
+education_variables <- c(
+  high_school_graduates = "B06009_003",
+  bachelor_degrees      = "B06009_005"
+)
+```
+
+
+## Wilmington
+
+Source: https://www.wilmingtonde.gov/about-us/about-the-city-of-wilmington/population-demographics
+Census tract map: https://opendata.firstmap.delaware.gov/datasets/delaware-census-tracts-2010/explore?location=39.711303%2C-75.541219%2C12.91
+
+```{r}
+census_tract_numbers <- c(
+  # Boulevard
+  "3", "4", "5",
+  
+  # Browntown / Hedgeville
+  "25", "26", "27",
+  
+  # Central and Midtown Brandywine
+  "28",
+  
+  # Delaware Avenue / Bancroft Parkway
+  "11", "12", "13",
+  
+  # East Side
+  "9", "29",
+  
+  # Northwest
+  "2",
+  
+  # Price's Run
+  "6.01", "6.02",
+  
+  # Riverside
+  "30.02",
+  
+  # Southwest Wilmington
+  "24",
+  
+  # South Wilmington
+  "19.02",
+  
+  # West Center City
+  "16", "21",
+  
+  # West Side
+  "14", "15", "22", "23"
+)
+```
+
+
+```{r}
+census_tract_names <- glue::glue("Census Tract {census_tract_numbers}, New Castle County, Delaware")
+```
+
+```{r}
+census_df_wilm <-
+  2011L:2019L %>% 
+  map_df(~ get_acs_with_year(geo_var = "tract",
+                             year_var = .,
+                             var_nums = c(baselines, housing_variables, economy_variables, education_variables)))
+```
+
+```{r}
+clean_names <- 
+  tribble(
+    ~variable,                                                ~clean_name,
+    "below_poverty_per_capita",                               "Below Poverty",
+    "employed_population_per_capita",                         "Employed",
+    "high_school_graduates_per_capita",                       "High School Graduates",
+    "household_received_foodstamps_in_last_12_months_per_hh", "Received Foodstamps Last 12 Months",
+    "total_households_received_food_stamps_per_hh",           "Received Foodstamps",
+    "bachelor_degrees_per_capita",                            "Bachelor Degrees",
+    "number_unemployed_per_capita",                           "Unemployed"
+  )
+```
+
+```{r}
+plot_df <- 
+  census_df_wilm %>% 
+  filter(NAME %in% census_tract_names) %>% 
+  select(-moe) %>% 
+  pivot_wider(names_from = "variable",
+              values_from = "estimate") %>% 
+  mutate(below_poverty = income_poverty_ratio_50_Below, income_poverty_ratio_50_99) %>% 
+  mutate(across(c(high_school_graduates, bachelor_degrees, employed_population, 
+                  number_unemployed, below_poverty), 
+                ~ . / population_count, 
+                .names = "{.col}_per_capita")) %>% 
+  mutate(across(c(household_received_foodstamps_in_last_12_months, total_households_received_food_stamps), 
+                ~ . / household_count, 
+                .names = "{.col}_per_hh")) %>%
+  pivot_longer(cols = c(-GEOID, -NAME, -year),
+               names_to = "variable",
+               values_to = "estimate") %>% 
+  filter(str_detect(variable, "per_capita|per_hh")) %>% 
+  filter(variable != "total_households_received_food_stamps_per_hh") %>% 
+  group_by(year, variable) %>% 
+  summarize(estimate = median(estimate)) %>% 
+  ungroup() %>% 
+  mutate(type = str_detect(variable, "per_capita"))
+
+plot_df_last <-
+  plot_df %>% 
+  filter(year == max(year)) %>% 
+  left_join(clean_names, by = "variable") %>% 
+  mutate(clean_name = as.character(glue::glue("{scales::percent(estimate)} {clean_name}")))
+
+ggplot() +
+  geom_line(data = plot_df,
+            aes(x = year,
+                y = estimate,
+                group = variable,
+                color = type),
+            size = 1,
+            linejoin = "round",
+            lineend = "round") +
+  geom_point(data = plot_df_last,
+             aes(x = year,
+                 y = estimate,
+                 group = variable,
+                 color = type)) +
+  scale_x_continuous(breaks = seq(2011, 2019, 2)) +
+  scale_y_continuous(labels = scales::percent,
+                     breaks = seq(0, 0.5, 0.25),
+                     limits = c(0, 0.5),
+                     sec.axis = dup_axis(
+                       breaks = plot_df_last$estimate,
+                       labels = plot_df_last$clean_name,
+                       name = NULL)) +
+  scale_color_manual(values = c(fse_blue(), fse_red())) +
+  labs(x = "",
+       y = "",
+       title = "<b>Wilmington: Don't Stick to the Status Quo</b>",
+       subtitle = "Percentage of key metrics for <span style = 'color: #d23742'><b>households</b></span> and <span style = 'color: #27829e'><b>people</b></span> by year in Wilmington, DE",
+       caption = "Source: American Community Survey") +
+  theme(legend.position = "none",
+        plot.title = element_markdown(),
+        plot.subtitle = element_markdown(),
+        plot.title.position = "plot",
+        panel.grid.minor = element_blank())
+```
+
+## State vs. Country
+
+```{r}
+census_df_state <-
+  2011L:2019L %>% 
+  map_df(~ get_acs_with_year(geo_var = "state",
+                             year_var = .,
+                             var_nums = c(baselines, housing_variables, economy_variables, education_variables)))
+
+census_df_us <-
+  2011L:2019L %>% 
+  map_df(~ get_acs_with_year(geo_var = "us",
+                             state_abbr = NULL,
+                             year_var = .,
+                             var_nums = c(baselines, housing_variables, economy_variables, education_variables)))
+```
+
+```{r}
+census_df <-
+  union(census_df_us, census_df_state)
+```
+
+## NAEP
+
+```{r}
+naep_math <- 
+  read_excel(here::here("Data", "NDECoreExcel_Mathematics, Grade 8, All students_20210720015129.Xls"), 
+             skip = 8) %>% 
+  mutate(variable = "8th Grade Math Score (NAEP)")
+
+naep_read <- 
+  read_excel(here::here("Data", "NDECoreExcel_Reading, Grade 4, All students_20210720015127.Xls"), 
+             skip = 8) %>% 
+  mutate(variable = "4th Grade Reading Score (NAEP)")
+
+naep_df <-
+  union(naep_math, naep_read) %>% 
+  filter(! is.na(Jurisdiction)) %>% 
+  mutate(GEOID = if_else(Jurisdiction == "National", "1", "10"),
+         Jurisdiction = if_else(Jurisdiction == "National", "United States", "Delaware"),
+         moe = NA_real_,
+         Year = as.integer(Year)) %>% 
+  select(GEOID, "NAME" = Jurisdiction, variable, "estimate" = `Average scale score`, moe, "year" = Year) %>% 
+  filter(year >= 2011)
+  
+```
+
+```{r}
+all_var_df <-
+  union(census_df, naep_df)
+```
+
+## Plot
+
+```{r}
+plot_df <- 
+  all_var_df %>% 
+  select(-moe) %>% 
+  pivot_wider(names_from = "variable",
+              values_from = "estimate") %>% 
+  mutate(below_poverty = income_poverty_ratio_50_Below, income_poverty_ratio_50_99) %>% 
+  mutate(across(c(high_school_graduates, bachelor_degrees, employed_population, 
+                  number_unemployed, below_poverty), 
+                ~ . / population_count, 
+                .names = "{.col}_per_capita")) %>% 
+  mutate(across(c(household_received_foodstamps_in_last_12_months, total_households_received_food_stamps), 
+                ~ . / household_count, 
+                .names = "{.col}_per_hh")) %>%
+  pivot_longer(cols = c(-GEOID, -NAME, -year),
+               names_to = "variable",
+               values_to = "estimate") %>% 
+  filter(str_detect(variable, "per_capita|per_hh|8th|4th")) %>% 
+  filter(!variable %in% c("total_households_received_food_stamps_per_hh",
+                          "employed_population_per_capita",
+                          "high_school_graduates_per_capita")) %>% 
+  filter(! is.na(estimate)) %>% 
+  mutate(variable = case_when(
+    variable == "bachelor_degrees_per_capita" ~ "Percent of People with Bachelor Degrees",
+    variable == "number_unemployed_per_capita" ~ "Percent of People Unemployed",
+    variable == "below_poverty_per_capita" ~ "Percent of People Below Poverty",
+    variable == "household_received_foodstamps_in_last_12_months_per_hh" ~ "Percent of Households on Food Stamps",
+    TRUE ~ as.character(variable)
+  ))
+  # group_by(year, NAME, variable) %>% 
+  # summarize(estimate = median(estimate)) %>% 
+  # ungroup() %>% 
+  # mutate(type = str_detect(variable, "per_capita"))
+
+plot_df_last <-
+  plot_df %>% 
+  filter(year == max(year)) %>% 
+  left_join(clean_names, by = "variable") %>% 
+  mutate(clean_name = as.character(glue::glue("{scales::percent(estimate)} {clean_name}")))
+
+ggplot() +
+  geom_line(data = plot_df,
+            aes(x = year,
+                y = estimate,
+                group = NAME,
+                color = NAME),
+            size = 1,
+            linejoin = "round",
+            lineend = "round") +
+  geom_point(data = plot_df_last,
+             aes(x = year,
+                 y = estimate,
+                 group = NAME,
+                 color = NAME)) +
+  scale_x_continuous(breaks = seq(2011, 2019, 2)) +
+  scale_y_continuous(labels = percent_or_not) +
+  scale_color_manual(values = c(fse_blue(), fse_red())) +
+  facet_wrap(~variable, ncol = 2, scales = "free_y") +
+  labs(x = "",
+       y = "",
+       title = "<b>Don't Stick to the Status Quo</b>",
+       subtitle = "Percentage of key metrics for the <span style = 'color: #d23742'><b>United States</b></span> and <span style = 'color: #27829e'><b>Delaware</b></span> by year",
+       caption = "<i>Sources: NAEP, American Community Survey</i>") +
+  theme(legend.position = "none",
+        plot.title = element_markdown(),
+        plot.subtitle = element_markdown(),
+        plot.caption = element_markdown(),
+        plot.title.position = "plot",
+        panel.grid.minor = element_blank(),
+        panel.spacing = unit(2, "lines"))
+```
+
+```{r}
+ggsave(here::here("indicators_over_time.png"),
+       dpi = 300, width = 8, height = 4.5)
+```
+
